@@ -6,6 +6,10 @@
 #include "memlayout.h"
 #include "mmu.h"
 #include "proc.h"
+#include "pstat.h"
+#include "stat.h"
+#include "syscall.h"
+
 
 int
 sys_fork(void)
@@ -88,4 +92,60 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+
+// prototype for my sys get pinfo and set tickets
+extern void fillpstat(pstatTable *);
+extern int setTicket(int pid, int tickets);
+
+
+int
+sys_getpinfo(void)
+{
+  //pstat table obj
+  pstatTable* p;
+
+  // use argptr to get the value o the pstat table object
+  if(argptr(0, (void*) &p, sizeof(pstatTable)) < 0) { // fetches pointer
+    return -1;                                        // if < 0 we know it failed
+  }
+  
+  // else it didnt fail
+  fillpstat(p); // fill table
+
+  // ** print items from table ** //
+  int i;
+
+  cprintf("PID\tTKTS\tTCKS\tSTAT\tNAME\n");
+
+  for(i = 0; i < NPROC; i++) {
+    if((*p)[i].inuse == 0) {        // process not in use
+      continue; 
+    }
+    cprintf("%d\t%d\t%d\t%s\t%s\n", 
+      (*p)[i].pid,
+      (*p)[i].tickets,
+      (*p)[i].ticks,
+      &(*p)[i].state, 
+      (*p)[i].name);
+  }
+  return 0;
+}
+
+int 
+sys_settickets(void) {
+  int n;
+
+  if(argint(0, &n) < 0) { // if arg 0 fails
+    return -1;            // failed ptr
+  }
+
+  if(n < 10) { // number less than 10
+    return -1;
+  }
+
+  int pid = sys_getpid(); // get process id
+  setTicket(pid, n);      // set ticket
+  return 0;
 }

@@ -24,6 +24,10 @@ char* sbrk(int);
 int sleep(int);
 int uptime(void);
 
+//** my get pinfo and settickets sys call **//
+void ps();
+int settickets(int); 
+
 // ulib.c
 int stat(const char*, struct stat*);
 char* strcpy(char*, const char*);

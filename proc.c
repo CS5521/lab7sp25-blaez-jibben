@@ -6,6 +6,14 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "pstat.h"
+
+#define RAND_MAX ((1U << 31) - 1)
+static int rseed = 1898888478;
+int random()
+{
+   return rseed = (rseed * 1103515245 + 12345) & RAND_MAX;
+}
 
 struct {
   struct spinlock lock;
@@ -139,6 +147,10 @@ userinit(void)
   p->tf->esp = PGSIZE;
   p->tf->eip = 0;  // beginning of initcode.S
 
+  // *** my code for setting ticks and tickets *** //
+  p->ticks = 0;
+  p->tickets = 10;
+
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
@@ -199,6 +211,15 @@ fork(void)
   np->sz = curproc->sz;
   np->parent = curproc;
   *np->tf = *curproc->tf;
+
+
+  // ** my code for setting child tickets to 0 ** //
+  int tickets = 10;
+  if (tickets < curproc->tickets) { tickets = curproc->tickets; }
+  
+  np->ticks = 0;
+  np->tickets = tickets;
+
 
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
@@ -324,35 +345,56 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
+  int totalTickets;
+  int winner;
+  int counter;
   c->proc = 0;
   
+  // go through the process table
   for(;;){
-    // Enable interrupts on this processor.
-    sti();
-
-    // Loop over process table looking for process to run.
-    acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
-
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
-
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
-
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
+    //cprintf("enabling interrupts\n");
+    sti(); // enables interrupts
+    //cprintf("aquire lock\n");
+    acquire(&ptable.lock); // aqquire lock
+  
+    totalTickets = 0;
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+      if(p->state != RUNNABLE) { continue; } // we only want runnable
+      /** runnable process **/ 
+      totalTickets += p->tickets; // add tickets for calculation
     }
-    release(&ptable.lock);
 
-  }
+    /**  no process are ready to run tickets 
+      are 0 in this case, exe loop again **/
+
+    if(totalTickets <= 0) { 
+      //cprintf("releasing lock 2\n");
+      release(&ptable.lock);
+      continue; 
+    }
+    
+    /** We shouldnt get to this point 
+      if there isnt a process to run **/
+
+    winner = random() % totalTickets; // calcs winner ticket
+    counter = 0;                      // init counter to 0 tickets
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+      if(p->state != RUNNABLE) { continue; } // we only want runnable
+      counter += p->tickets;                 // add tickets to ctr
+      if(counter > winner) { break; }        // we have winner
+    }
+
+    //schedule winner
+    c->proc = p;        // schedule
+    switchuvm(p);
+    p->state = RUNNING; // process is running
+    swtch(&(c->scheduler), p->context);
+    switchkvm();    
+    c->proc = 0;
+    p->ticks++;         // increase ticks
+    release(&ptable.lock);
+    // loop all again 
+  } 
 }
 
 // Enter scheduler.  Must hold only ptable.lock
@@ -532,3 +574,58 @@ procdump(void)
     cprintf("\n");
   }
 }
+
+void fillpstat(pstatTable * pstat) {
+    struct proc *p;
+
+    static char *states[] = {
+    [UNUSED]    "U",
+    [EMBRYO]    "E",
+    [SLEEPING]  "S",
+    [RUNNABLE]  "A",
+    [RUNNING]   "R",
+    [ZOMBIE]    "Z"
+    };
+
+    int i = 0; // this will be our index for adding to pstat table
+
+    // traverse through proc array to grab needed fields out of each
+    // proc struct and copy them into the pstat table object
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if(p->state == UNUSED) {              // process not in use
+            (*pstat)[i].inuse = 0;            // non active process, not in use
+            i++;                              // increase index in pstat table
+            continue; 
+        }
+        if(p->state >= 0) {                   // active process, add
+            (*pstat)[i].inuse = 1;            // mark in use
+            (*pstat)[i].tickets = p->tickets; // add tickets
+            (*pstat)[i].pid = p->pid;         // add pid
+            (*pstat)[i].ticks = p->ticks;     // add ticks
+            safestrcpy((*pstat)[i].name, p->name, sizeof(char[16]));  // placeholder p->name;     
+            (*pstat)[i].state = *states[p->state];                    // add state as char ascii encoding
+        }
+        i++; // increase index for pstat table
+    }
+}
+
+int setTicket(int pid, int tickets) {
+  struct proc *p;
+
+  // loop until find pid
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+    if(p->pid == pid) {      
+      p->tickets = tickets;
+      return 0;
+    }
+
+
+  }
+
+  // didnt find pid?
+  return -1;
+}
+
+
+
+
